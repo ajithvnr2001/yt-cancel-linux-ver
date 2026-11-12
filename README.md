@@ -62,7 +62,7 @@ Then the script exits. Cron starts it again 15 minutes later.
 ### Quick start (already set up)
 
 ```bash
-cd /home/ajith/yt-automation      # or wherever you cloned it
+cd ~/yt-cancel-linux-ver         # or wherever you cloned it
 OCU_SCAN_ONLY=1 ./run-check.sh    # report only, never clicks
 ./run-check.sh                    # one real check/removal
 ./install-cron.sh 15              # every 15 minutes
