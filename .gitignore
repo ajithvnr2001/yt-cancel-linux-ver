@@ -1,5 +1,8 @@
 # Runtime artifacts
 cancel-log.txt
+cancel-log.txt.1
+cron.log
+rejections.json
 run.lock
 
 # OS junk

@@ -1,482 +1,715 @@
-# yt-automation
+# yt-cancel-linux-ver
 
-**Automatically cancels pending YouTube TV add-ons** — one per scheduled run —
-by driving Chrome through the OS accessibility tree (via
-[open-computer-use](https://github.com/iFurySt/open-computer-use) / `ocu`).
+**Automatically cancel pending YouTube TV add-ons on Linux + Brave — one per run, every 15 minutes.**
 
-This README is written for **complete beginners**. It explains, in depth:
+This is the Linux port of [yt-automation](https://github.com/ajithvnr2001/yt-automation).
+The original drives Windows + Chrome through the OS accessibility tree (`ocu`).
+This version drives **Brave** (or Chrome/Chromium) on Linux through the
+**Chrome DevTools Protocol (CDP)** — no desktop-automation package, no npm
+dependencies.
 
-1. what the tool does (and what it never does),
-2. the exact **conditions** under which it acts,
-3. the exact **behavior** for every scenario (behavior matrix),
-4. everything you must **install** and set up, end to end,
-5. how to **run it once**, how to **automate it**, and how to **stop it**,
-6. how to **read the logs**, and
-7. how to **troubleshoot** every known issue.
+You point it at your own YouTube TV **Membership → Subscriptions** page. Every
+run it looks for add-ons showing a **Remove** button, cancels **one**, verifies
+the result, and exits. A cron entry repeats that every **15 minutes**.
 
-> ⚠️ **Important warning**
-> This tool performs **real subscription cancellations** on your YouTube TV
-> account. It is designed conservatively — it only ever clicks elements whose
-> accessible name begins with `Remove`, then the confirmation button
-> `Yes, cancel`. It never touches your base plan. Still, you are responsible
-> for your own account; review what it does before enabling automation.
+> ⚠️ **This performs real subscription cancellations on your own account.**
+> It only clicks buttons whose label starts with `Remove` and the confirmation
+> button `Yes, cancel`. The base YouTube TV plan has no Remove button and is
+> never touched. Run a scan-only pass first (section 6.1) and read the output
+> before enabling cron.
 
 ---
 
 ## Table of contents
 
-- [1. What this tool does](#1-what-this-tool-does)
-- [2. Conditions (when it acts and when it won't)](#2-conditions-when-it-acts-and-when-it-wont)
-- [3. How it behaves (behavior matrix)](#3-how-it-behaves-behavior-matrix)
-- [4. What you need to install](#4-what-you-need-to-install)
-- [5. End-to-end setup (Windows)](#5-end-to-end-setup-windows)
-- [6. Run it once (manual)](#6-run-it-once-manual)
-- [7. Automate every 15 minutes](#7-automate-every-15-minutes)
-- [8. Configuration (all options)](#8-configuration-all-options)
-- [9. Logs — how to read them](#9-logs--how-to-read-them)
-- [10. Stopping / uninstalling](#10-stopping--uninstalling)
-- [11. Safety design](#11-safety-design)
-- [12. Troubleshooting (in depth)](#12-troubleshooting-in-depth)
-- [13. FAQ](#13-faq)
-- [14. Project layout](#14-project-layout)
-- [15. License](#15-license)
+1. [What it does](#1-what-it-does)
+2. [What it never does](#2-what-it-never-does)
+3. [How it works](#3-how-it-works)
+4. [Requirements](#4-requirements)
+5. [One-time setup (from zero)](#5-one-time-setup-from-zero)
+6. [First runs (manual)](#6-first-runs-manual)
+7. [Automate every 15 minutes](#7-automate-every-15-minutes)
+8. [Configuration](#8-configuration)
+9. [Behavior matrix](#9-behavior-matrix)
+10. [Errors, retries and backoff](#10-errors-retries-and-backoff)
+11. [Logs](#11-logs)
+12. [Troubleshooting](#12-troubleshooting)
+13. [Stop / uninstall / revert](#13-stop--uninstall--revert)
+14. [Security notes](#14-security-notes)
+15. [FAQ](#15-faq)
+16. [Project layout](#16-project-layout)
+17. [Windows version](#17-windows-version)
+18. [License](#18-license)
 
 ---
 
-## 1. What this tool does
+## 1. What it does
 
-On the YouTube TV **Membership → Subscriptions** page
-(`https://tv.youtube.com/settings/subscriptions`), every add-on you own is
-listed with a **Remove** button. Add-ons you don't own show an **Add** button.
+On `https://tv.youtube.com/settings/subscriptions`:
 
-This tool:
+1. Opens or reuses a Brave tab showing the Membership page.
+2. Reloads it so the add-on list is current.
+3. Finds every button whose accessible label starts with **`Remove`**
+   (these are add-ons you currently own).
+4. Clicks the first one with trusted mouse events.
+5. Waits for the **Review and cancel** dialog and clicks **`Yes, cancel`**.
+6. Waits for **`Cancellation successful`**.
+7. Reloads and verifies that the Remove button is gone.
+8. Repeats until one cancellation is done (default), or nothing is pending.
 
-1. opens/restores the Chrome window showing that page,
-2. reads the page's accessibility tree (what screen readers see),
-3. finds add-ons that currently show a **Remove** button,
-4. clicks the first one,
-5. waits for the confirmation dialog,
-6. clicks **"Yes, cancel"**,
-7. re-scans and repeats until nothing is left (or a per-run cap is reached),
-8. logs everything to `cancel-log.txt`.
+Then the script exits. Cron starts it again 15 minutes later.
 
-It is a **one-shot script** — by itself it runs once and exits. To run it
-repeatedly, you wrap it in a Windows Scheduled Task (provided in this repo).
+### Quick start (already set up)
+
+```bash
+cd /home/ajith/yt-automation      # or wherever you cloned it
+OCU_SCAN_ONLY=1 ./run-check.sh    # report only, never clicks
+./run-check.sh                    # one real check/removal
+./install-cron.sh 15              # every 15 minutes
+tail -f cancel-log.txt            # watch
+./uninstall-cron.sh               # stop
+```
 
 ---
 
-## 2. Conditions (when it acts and when it won't)
+## 2. What it never does
 
-### 2.1 Hard requirements for a successful cancellation
+- ❌ Never clicks **`Add`** buttons.
+- ❌ Never touches the **base YouTube TV plan** (it has no Remove button).
+- ❌ Never clicks a confirmation other than **`Yes, cancel`**.
+- ❌ Never cancels more than `OCU_MAX_REMOVALS` items per run (default **1**).
+- ❌ Never retries inside the same run after a failed confirmation.
+- ❌ Never kills your browser to force the debugging port on.
+- ❌ Never runs without your logged-in Brave profile.
 
-| # | Condition | Why |
+---
+
+## 3. How it works
+
+```
+cron (*/15)
+   │
+   ▼
+run-check.sh ──► is CDP port 9222 up?
+   │                 ├─ no, Brave not running ──► launch-brave.sh
+   │                 └─ no, Brave already running ──► log error, exit
+   ▼
+cancel-addons-linux.mjs
+   │
+   ├─ connect to the tv.youtube.com tab over CDP
+   ├─ Page.reload  → wait for the SPA to render
+   ├─ find buttons labelled "Remove …"
+   │     ├─ none → "nothing to do" → exit 0
+   │     └─ some → pick the first eligible one
+   ├─ click Remove (trusted mouse events)
+   ├─ wait for dialog:
+   │     ├─ "Yes, cancel" → click it
+   │     ├─ "error canceling your membership" → back off, retry next tick
+   │     ├─ item disappeared → count as cancelled
+   │     └─ nothing after 20 s → stop, retry next tick
+   ├─ wait for "Cancellation successful"
+   ├─ reload + verify the Remove button is gone
+   └─ exit
+```
+
+Why CDP instead of the Windows accessibility tree?
+
+- It reads the real DOM, so the add-on name is precise (`aria-label="Remove Acorn TV"`).
+- It dispatches real mouse events, which YouTube's Polymer UI accepts.
+- It can reload the page and verify the final state.
+- It needs no extra automation runtime on Linux.
+
+`--force-renderer-accessibility` is still passed to Brave. It makes the page
+readable to accessibility clients (and to `ocu` if you ever want to debug with
+it), but the automation itself uses CDP.
+
+---
+
+## 4. Requirements
+
+| Requirement | Why | How to check |
 |---|---|---|
-| 1 | **Windows 10/11** | Uses Windows accessibility APIs |
-| 2 | **Node.js 18+** installed and on PATH | The script is Node.js |
-| 3 | **`open-computer-use` (`ocu`) installed globally** | The driver that reads/clicks the UI |
-| 4 | **Google Chrome running** | The script targets Chrome |
-| 5 | **You are signed in to YouTube TV in Chrome** | The page only shows add-ons when signed in |
-| 6 | **The Membership tab is open in Chrome** | `https://tv.youtube.com/settings/subscriptions` |
-| 7 | **At least one add-on shows a `Remove` button** | Nothing to do otherwise |
-| 8 | **YouTube's server accepts the cancellation** | Server may reject (see 2.2) |
+| Linux with X11 (Linux Mint/Ubuntu/Debian tested) | CDP + browser session | `echo $DISPLAY` (usually `:0`) |
+| Node.js **18+** | Runs the engine | `node -v` |
+| Brave (or Chrome/Chromium) | The browser being driven | `brave-browser --version` |
+| Logged-in YouTube TV session | The page must show your add-ons | open `tv.youtube.com` and sign in |
+| `curl` | Health checks in the wrapper | `curl --version` |
+| `cron` | 15-minute schedule | `pgrep -x cron` |
+| `python3` (optional) | Only for `test-error.sh` | `python3 --version` |
 
-> **Note on condition 6:** the script looks for a Chrome window whose title
-> contains `YouTube TV`. Chrome tab titles look like
-> `Membership - Settings - YouTube TV - Google Chrome`. If that tab is the
-> only YouTube TV tab, the window title matches.
-
-### 2.2 Conditions that BLOCK cancellation (script still runs, but can't finish)
-
-| Condition | What you'll see | What the script does |
-|---|---|---|
-| YouTube server rejects | Log: `YouTube rejected the cancellation ("error canceling your membership")` | Stops the run; retries at next scheduled tick |
-| No confirmation dialog appears | Log: `no 'Yes, cancel' dialog and item still present` | Stops the run; retries at next tick (defensive stop) |
-| The add-on quietly disappears before dialog | Log: `no dialog but item gone — counted as cancelled` | Counts it as cancelled, continues |
-| Chrome / tab not found | Log: `window restore: not-found` | Still attempts to scan (element actions can still work); may fail if the page isn't there |
-| Another run in progress | Log: `another run already in progress — skipping this tick` | Skips, waits for next tick |
-| No Remove buttons at all | Log: `no pending Remove buttons found — nothing to do` | Exits quietly (code 0) |
-| `ocu` call times out | Log: `ocu call failed: ... timed out ...` | Retries the state read up to 3×; then aborts the run |
-
-### 2.3 What it NEVER does
-
-- ❌ Never clicks **Add** buttons.
-- ❌ Never touches your **base YouTube TV plan** (it has no Remove button, so it is never matched).
-- ❌ Never presses random keyboard shortcuts or moves your mouse.
-- ❌ Never tries more than **one** cancellation per run by default.
-- ❌ Never retries within the same run after a failed confirmation.
-- ❌ Never runs without your login session (Task Scheduler runs it as you).
+No `npm install`, no `open-computer-use`, no sudo for the app itself.
 
 ---
 
-## 3. How it behaves (behavior matrix)
+## 5. One-time setup (from zero)
 
-### 3.1 The per-run lifecycle
+The commands below are for Linux Mint 22 / Ubuntu 24.04 and similar. If a step
+is already done, skip it.
 
-```
-Run starts
-  │
-  ├─ 1. Acquire lock (skip if another run is active)
-  ├─ 2. Restore Chrome's "YouTube TV" window (best effort)
-  ├─ 3. get_app_state → parse accessibility tree
-  ├─ 4. Find buttons named "Remove …"
-  │       ├─ none → log "nothing to do" → exit 0
-  │       └─ some → pick the first one
-  ├─ 5. Click Remove (batched with fresh state in the same process)
-  ├─ 6. Wait 2s, then poll for the confirmation dialog (up to ~20s)
-  │       ├─ "Yes, cancel" found → click it
-  │       ├─ YouTube rejection toast found → log, stop run (retry next tick)
-  │       ├─ item disappeared → count as cancelled
-  │       └─ item still present → log, stop run (retry next tick)
-  ├─ 7. Count the cancellation; wait 4s; loop back to step 3
-  └─ 8. Stop when: nothing pending, or per-run cap reached, or time cap reached
+### 5.1 Install Node.js 18+
+
+Check:
+
+```bash
+node -v
 ```
 
-### 3.2 Behavior by scenario
+If it is missing or older than v18, install Node 22 from NodeSource:
 
-| Scenario | Behavior |
-|---|---|
-| 1 pending add-on, normal dialog | Remove → dialog → "Yes, cancel" → `cancellation submitted` |
-| Several pending add-ons | One is cancelled per run (`MAX_REMOVALS=1`); the next tick handles the next |
-| YouTube rejects (trial add-ons) | Logs the rejection, stops. Next tick tries again. Repeats indefinitely |
-| No dialog but item gone | Counted as cancelled (success) — protects against missed dialogs |
-| No dialog and item still there | Defensive stop, next tick retries |
-| Nothing pending | Quiet exit, no clicks |
-| Chrome window minimized/closed | Window restore may say `not-found`; scanning may still work, or the run logs a state error and aborts safely |
-| Two runs overlap | Lock file → second run logs `skipping this tick` and exits |
-| Script killed mid-run while lock stale | Lock auto-stolen after 30 minutes |
-| `ocu` hangs | 90s per-call timeout; whole process tree is force-killed; run aborts safely |
-| `get_app_state` runtime timeout | Retried up to 3 times with 3s pauses |
+```bash
+sudo apt update
+sudo apt install -y ca-certificates curl gnupg
+curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -
+sudo apt install -y nodejs
+node -v      # should print v22.x or newer
+```
 
-### 3.3 Timing profile of a typical successful run
+> Alternative: install `nvm` from https://github.com/nvm-sh/nvm and run
+> `nvm install 22`. Either is fine; the scripts use the `node` on `PATH`.
 
-| Step | Approx. time |
-|---|---|
-| Window restore | 1–3 s |
-| State read | 10–20 s |
-| Click Remove | ~10–30 s |
-| Wait + poll for dialog | 2–20 s |
-| Click "Yes, cancel" | ~10–30 s |
-| Post-confirm wait + final rescan | ~10–20 s |
-| **Total** | **~1–2 minutes** |
+### 5.2 Install Brave
+
+Linux Mint's software manager works, or use Brave's official apt repository:
+
+```bash
+sudo apt update
+sudo apt install -y curl
+
+sudo curl -fsSLo /usr/share/keyrings/brave-browser-archive-keyring.gpg \
+  https://brave-browser-apt-release.s3.brave.com/brave-browser-archive-keyring.gpg
+
+echo "deb [signed-by=/usr/share/keyrings/brave-browser-archive-keyring.gpg] https://brave-browser-apt-release.s3.brave.com/ stable main" \
+  | sudo tee /etc/apt/sources.list.d/brave-browser-release.list
+
+sudo apt update
+sudo apt install -y brave-browser
+brave-browser --version
+```
+
+### 5.3 Get the code
+
+```bash
+git clone https://github.com/ajithvnr2001/yt-cancel-linux-ver.git
+cd yt-cancel-linux-ver
+chmod +x run-check.sh launch-brave.sh install-cron.sh uninstall-cron.sh doctor.sh test-error.sh
+```
+
+If you downloaded a ZIP instead, extract it and `cd` into the folder.
+
+### 5.4 Sign in to YouTube TV in Brave
+
+1. Open Brave.
+2. Go to <https://tv.youtube.com/> and sign in with the Google account that
+   owns the add-ons.
+3. Open <https://tv.youtube.com/settings/subscriptions>.
+4. Confirm you can see **Your plan** and **Your add-ons**.
+
+Keep this tab open. The automation reloads it, so it does not need to stay
+focused, but the browser must stay running.
+
+> If Brave asks to **Unlock Keyring** after a reboot, unlock it. Without the
+> keyring, Brave cannot decrypt the saved login cookies and the page will show
+> the signed-out state.
+
+### 5.5 Start Brave with the DevTools port
+
+The automation needs Brave listening on `127.0.0.1:9222`.
+
+**Easiest (recommended):**
+
+```bash
+cd yt-cancel-linux-ver
+./launch-brave.sh
+```
+
+It will:
+
+- do nothing if port 9222 is already open,
+- refuse to kill an existing Brave session that lacks the port,
+- otherwise start Brave with:
+  ```
+  --remote-debugging-port=9222 --force-renderer-accessibility
+  --restore-last-session https://tv.youtube.com/settings/subscriptions
+  ```
+
+Verify:
+
+```bash
+curl -s http://127.0.0.1:9222/json/version
+```
+
+You should see JSON with a `webSocketDebuggerUrl`.
+
+> **Important:** you cannot add the debugging port to an already-running Brave.
+> If `launch-brave.sh` says *"Brave is running without --remote-debugging-port"*,
+> close Brave completely and run it again.
+
+### 5.6 Make the flags persistent (recommended)
+
+Patch the per-user application launchers so starting Brave from the menu also
+enables the port:
+
+```bash
+mkdir -p ~/.local/share/applications
+
+for f in brave-browser.desktop com.brave.Browser.desktop; do
+  [ -f "/usr/share/applications/$f" ] || continue
+  sed -E 's|^Exec=/usr/bin/brave-browser-stable %U$|Exec=/usr/bin/brave-browser-stable --remote-debugging-port=9222 --force-renderer-accessibility %U|' \
+    "/usr/share/applications/$f" > "$HOME/.local/share/applications/$f"
+done
+
+update-desktop-database "$HOME/.local/share/applications" 2>/dev/null || true
+```
+
+Check the result:
+
+```bash
+grep '^Exec=' ~/.local/share/applications/brave-browser.desktop
+```
+
+Expected:
+
+```
+Exec=/usr/bin/brave-browser-stable --remote-debugging-port=9222 --force-renderer-accessibility %U
+Exec=/usr/bin/brave-browser-stable
+Exec=/usr/bin/brave-browser-stable --incognito
+```
+
+If your Brave executable is `brave-browser` instead of
+`brave-browser-stable`, adjust the `sed` pattern or edit the file by hand.
+
+### 5.7 Run the doctor
+
+```bash
+./doctor.sh
+```
+
+It checks the display, Node version, Brave, the CDP port, the YouTube TV tab,
+cron, and the launcher override. Fix anything marked ❌ before continuing.
 
 ---
 
-## 4. What you need to install
+## 6. First runs (manual)
 
-| Requirement | How to check | Where to get it |
-|---|---|---|
-| Windows 10/11 | Settings → System → About | — |
-| Node.js 18+ | `node --version` | https://nodejs.org (LTS) |
-| npm (comes with Node.js) | `npm --version` | — |
-| Git (optional, for cloning) | `git --version` | https://git-scm.com |
-| Google Chrome | Installed app | https://www.google.com/chrome |
-| `open-computer-use` | `ocu --version` | `npm i -g open-computer-use` |
-| A YouTube TV account | Signed in to tv.youtube.com | google account |
+### 6.1 Scan only (safe — never clicks)
 
----
-
-## 5. End-to-end setup (Windows)
-
-### Step 5.1 — Install Node.js
-
-1. Download the **LTS** installer from https://nodejs.org.
-2. Run it. Accept defaults (make sure **"Add to PATH"** is checked).
-3. Open a **new** PowerShell window and verify:
-   ```powershell
-   node --version    # e.g. v22.x.x
-   npm --version     # e.g. 11.x.x
-   ```
-
-### Step 5.2 — Install the computer-use driver
-
-```powershell
-npm i -g open-computer-use
-ocu --version        # e.g. 1.1.4
-ocu capabilities --json   # optional: confirms native runtime availability
+```bash
+OCU_SCAN_ONLY=1 ./run-check.sh
 ```
 
-### Step 5.3 — Get this project
-
-```powershell
-git clone https://github.com/ajithvnr2001/yt-automation.git D:\yt-automation
-cd D:\yt-automation
-```
-
-(If you don't use Git, download the ZIP from the repo page and extract it.)
-
-### Step 5.4 — Open your YouTube TV Membership page
-
-1. Open **Chrome**.
-2. Go to `https://tv.youtube.com/` and sign in.
-3. Open `https://tv.youtube.com/settings/subscriptions`.
-4. Keep this tab open (you may keep using Chrome normally).
-
-> The script restores the window with "YouTube TV" in its title when it runs.
-
-### Step 5.5 — Verify the installation (dry run)
-
-```powershell
-$env:OCU_SCAN_ONLY = "1"
-node .\cancel-addons.mjs
-```
-
-Expected output (example):
+Example:
 
 ```
-[2026-11-12T10:47:21Z] === run start (scanOnly=true) ===
-[2026-11-12T10:47:23Z] window restore: restored
-[2026-11-12T10:47:38Z] SCAN_ONLY: found 2 pending removal(s):
-[2026-11-12T10:47:38Z]   - idx 485 => Acorn TV
-[2026-11-12T10:47:38Z]   - idx 689 => Gaia
-[2026-11-12T10:47:38Z] === run end (removals=0) ===
+=== run start (linux/cdp, scanOnly=true, max=1) ===
+SCAN_ONLY: found 2 pending removal(s):
+  - Acorn TV
+  - Gaia
+=== run end (removals=0) ===
 ```
 
-If it says `no pending Remove buttons found`, you have nothing to cancel right
-now — which is fine.
+If it says `no pending Remove buttons found — nothing to do`, there is nothing
+to cancel right now. That is a successful run.
 
----
+### 6.2 Cancel one add-on
 
-## 6. Run it once (manual)
-
-```powershell
-Remove-Item Env:OCU_SCAN_ONLY   # make sure scan-only is OFF
-node .\cancel-addons.mjs
+```bash
+./run-check.sh
 ```
 
-That cancels **one** add-on. Run it again to cancel the next one.
+Example:
+
+```
+=== run start (linux/cdp, scanOnly=false, max=1) ===
+clicking Remove for: Acorn TV
+confirming with "Yes, cancel"
+cancellation submitted for: Acorn TV (total this run: 1)
+verified removed: Acorn TV
+=== run end (removals=1) ===
+```
+
+Run it again to cancel the next one. Or set `OCU_MAX_REMOVALS=3` to cancel up
+to three in one run.
+
+### 6.3 Safely test the error branch
+
+YouTube sometimes answers the confirmation with:
+
+> There was an error canceling your membership. Please try again later…
+
+You can verify the automation handles that **without touching your account**:
+
+```bash
+./test-error.sh
+```
+
+It starts a local mock subscriptions page, opens it in a new Brave tab, runs
+the engine against it (twice), checks that:
+
+- the `Remove` → `Yes, cancel` flow is executed,
+- the rejection is detected,
+- the log says *"will retry on the next 15-minute tick"*,
+- the second run retries the same item,
+
+then closes the tab, stops the mock server, and deletes the temporary logs.
+It never visits the real YouTube TV page.
 
 ---
 
 ## 7. Automate every 15 minutes
 
-### Option A — one-liner installer (recommended)
+### 7.1 Install the schedule
 
-```powershell
-powershell -ExecutionPolicy Bypass -File .\install-cron.ps1 -IntervalMinutes 15
+```bash
+./install-cron.sh          # every 15 minutes
+./install-cron.sh 30       # optional: every 30 minutes
 ```
 
-Creates scheduled task **`OCU-YTTV-CancelAddons`**:
+This adds one user-crontab line:
 
-- runs `run-cancel.cmd` (→ `cancel-addons.mjs`)
-- every **15 minutes**
-- starting **15 minutes from now**
-- only while you're logged on
-
-Verify:
-
-```powershell
-schtasks /Query /TN "OCU-YTTV-CancelAddons" /FO LIST
+```
+*/15 * * * * /path/to/yt-cancel-linux-ver/run-check.sh >> /path/to/yt-cancel-linux-ver/cron.log 2>&1 # yt-automation
 ```
 
-### Option B — Task Scheduler GUI
+No sudo is needed: it is your user's crontab.
 
-1. Press <kbd>Win</kbd>, type "Task Scheduler", open it.
-2. **Create Task…**
-3. General: Name `OCU-YTTV-CancelAddons`; "Run only when user is logged on".
-4. Triggers: **New…** → "Daily" → check **"Repeat every"** → `15 minutes` → "for a duration of: Indefinitely".
-5. Actions: **New…** → Action "Start a program" → Program/script: `D:\yt-automation\run-cancel.cmd`.
-6. OK → OK.
+### 7.2 Verify
 
-### What each tick does
+```bash
+crontab -l
+pgrep -x cron        # must print a PID
+```
 
-1. Restores Chrome's YouTube TV window (briefly brings it to front).
-2. Scans for Remove buttons.
-3. Cancels exactly one (if any) — or logs "nothing to do" and exits quietly.
+Wait for the next quarter hour, then:
+
+```bash
+tail -n 20 cron.log
+tail -n 20 cancel-log.txt
+```
+
+The first tick may log `another run already in progress — skipping this tick`
+if you are manually running the script at the same time. That is expected.
+
+### 7.3 Watch it
+
+```bash
+tail -f cancel-log.txt
+# in another terminal:
+tail -f cron.log
+```
+
+### 7.4 Stop / restart
+
+```bash
+./uninstall-cron.sh      # stop all automatic runs
+./install-cron.sh 15     # start again
+```
 
 ---
 
-## 8. Configuration (all options)
+## 8. Configuration
 
-All settings are **optional environment variables**.
+All settings are optional environment variables. Put them in `run-check.sh`
+(export them before the `exec node` line) or in the crontab line.
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `OCU_BIN` | npm-global `ocu` bin | Path to the `ocu` CLI entry; override if `ocu` isn't found |
-| `OCU_APP` | `Google Chrome` | App name as seen by `ocu` |
-| `OCU_MAX_REMOVALS` | `1` | Max cancellations per run |
-| `OCU_RUN_TIMEOUT_MS` | `180000` | Hard time cap per run (ms) |
-| `OCU_SCAN_ONLY` | unset | `1` = scan & report only, never click |
-| `OCU_AUTOMATION_DIR` | script folder | Where logs/lock live |
+| `CDP_PORT` | `9222` | Local DevTools port |
+| `TV_URL` | `https://tv.youtube.com/settings/subscriptions` | Page to open/drive |
+| `OCU_URL_PATTERN` | `tv\.youtube\.com` | Regex used to pick the browser tab. **Testing only** |
+| `OCU_MAX_REMOVALS` | `1` | Maximum cancellations per run |
+| `OCU_RUN_TIMEOUT_MS` | `180000` | Hard cap for one run |
+| `OCU_LOAD_TIMEOUT_MS` | `60000` | Page-load timeout |
+| `OCU_CONFIRM_TIMEOUT_MS` | `20000` | Dialog wait |
+| `OCU_REJECT_COOLDOWN_MIN` | `0` | Minutes to skip an add-on after YouTube rejects it. `0` = retry on the next tick |
+| `OCU_SCAN_ONLY` | unset | `1` = report only, never click |
+| `OCU_AUTOMATION_DIR` | script folder | Where `cancel-log.txt`, `run.lock`, `rejections.json` live |
 
-Example — allow up to 3 per run, scan only:
+Examples:
 
-```powershell
-$env:OCU_MAX_REMOVALS = "3"
-$env:OCU_SCAN_ONLY   = "1"
-node .\cancel-addons.mjs
+```bash
+# report only
+OCU_SCAN_ONLY=1 ./run-check.sh
+
+# cancel up to 3, retry rejected items every tick
+OCU_MAX_REMOVALS=3 OCU_REJECT_COOLDOWN_MIN=0 ./run-check.sh
+
+# try a non-default port
+CDP_PORT=9333 ./run-check.sh
 ```
-
-On Windows, you can set these permanently for the task by adding them to the
-cmd wrapper or using `setx` (advanced).
 
 ---
 
-## 9. Logs — how to read them
+## 9. Behavior matrix
 
-Every run appends timestamped lines to **`cancel-log.txt`** in the project
-folder.
+| Scenario | What happens | Exit code |
+|---|---|---|
+| Nothing shows **Remove** | Logs `no pending Remove buttons found — nothing to do` | 0 |
+| One pending add-on, normal dialog | Remove → Yes, cancel → `Cancellation successful` → verified | 0 |
+| Several pending add-ons | Cancels one (`OCU_MAX_REMOVALS=1`); next tick does the next | 0 |
+| Item disappears without a dialog | Counted as cancelled; run stops | 0 |
+| No dialog and item still there | Stops; next 15-minute tick retries | 0 |
+| YouTube rejects (`error canceling your membership`) | Logs rejection; retries next tick (default cooldown 0) | 0 |
+| Page takes too long / won't load | Logs `page load error`; next tick retries | 1 |
+| Signed out / redirected to Google | Logs `signed out`; next tick retries | 1 |
+| Brave not running | `run-check.sh` starts it (if possible) | — |
+| Brave running without port 9222 | Logs a clear error; **does not kill Brave** | 1 |
+| Two runs overlap | Lock file → `another run already in progress — skipping this tick` | 0 |
+| Stale lock older than 30 min | Stolen automatically | 0 |
+| `OCU_SCAN_ONLY=1` | Lists pending removals, clicks nothing | 0 |
 
-```powershell
-Get-Content .\cancel-log.txt -Tail 30
+---
+
+## 10. Errors, retries and backoff
+
+Every run is independent. **There is no retry loop inside a run**, so a stuck
+page cannot hammer YouTube. Instead:
+
+- Any error ends the current run.
+- The next **15-minute cron tick** tries again automatically.
+- A server rejection is also retried on the next tick by default.
+- The rejected add-on is written to `rejections.json` so you can see it.
+
+If you want a longer pause for a permanently rejected item (for example a free
+trial YouTube refuses to cancel), set:
+
+```bash
+OCU_REJECT_COOLDOWN_MIN=360    # skip it for 6 hours
 ```
 
-| Log line | Meaning |
+The cooldown is per add-on: other pending add-ons are still handled every tick.
+
+> The `error canceling your membership` response is usually server-side and
+> often temporary. In a real run on this project, the same add-on was rejected
+> twice and succeeded on the third attempt. The automation logged and retried
+> it exactly as described above.
+
+---
+
+## 11. Logs
+
+| File | Contents |
 |---|---|
-| `=== run start (...)` | Run begins |
-| `window restore: restored` | Chrome's YouTube TV window brought to front |
-| `window restore: not-found` | No matching window found; script still tries to scan |
-| `clicking Remove for: X (idx N)` | About to click Remove for add-on X |
-| `confirming with 'Yes, cancel' (idx N)` | Confirmation dialog found, clicking |
-| `cancellation submitted for: X (total this run: N)` | ✅ Success — server accepted |
-| `no dialog but item gone — counted as cancelled: X` | ✅ Item disappeared before dialog; counted |
-| `no pending Remove buttons found — nothing to do` | ✅ Quiet tick — nothing pending |
-| `YouTube rejected the cancellation ("error canceling your membership")` | ❌ Server refused; will retry next tick |
-| `no 'Yes, cancel' dialog and item still present — stopping this run` | ❌ Defensive stop; retry next tick |
-| `another run already in progress — skipping this tick` | Lock held by another run |
-| `state error: ocu call failed: ...` | CLI failure (detail included) |
-| `ocu call failed: ... timed out ...` | Transient runtime timeout (auto-retried ×3) |
-| `=== run end (removals=N) ===` | Run finished; N cancellations this run |
+| `cancel-log.txt` | One line per action, timestamped (UTC) |
+| `cron.log` | stdout/stderr of each scheduled tick |
+| `rejections.json` | `{ "Add-on name": unix_ms }` for server rejections |
+| `run.lock` | Exists only while a run is active |
 
-Exit codes: `0` = clean end; `1` = ended with a hard error and zero removals.
+Useful greps:
 
----
-
-## 10. Stopping / uninstalling
-
-```powershell
-# One-liner:
-powershell -ExecutionPolicy Bypass -File .\uninstall-cron.ps1
-
-# …or manually:
-schtasks /Delete /TN "OCU-YTTV-CancelAddons" /F
-
-# Pause until next manual run:
-schtasks /Run /TN "OCU-YTTV-CancelAddons"   # run once now
+```bash
+grep "cancellation submitted" cancel-log.txt
+grep "rejected" cancel-log.txt
+grep "nothing to do" cancel-log.txt
 ```
 
-To kill a stuck run immediately:
+`cancel-log.txt` is rotated to `cancel-log.txt.1` when it exceeds 2 MB.
 
-```powershell
-Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -match 'cancel-addons' } |
-    ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
+---
+
+## 12. Troubleshooting
+
+### `Brave is not exposing CDP on http://127.0.0.1:9222`
+
+Brave is running without `--remote-debugging-port=9222`, or it is not running.
+
+1. Close Brave completely.
+2. Run `./launch-brave.sh`.
+3. Or start it from the menu if you applied section 5.6.
+
+The wrapper **never kills** an existing browser to fix this.
+
+### `signed out — YouTube TV redirected to Google sign-in`
+
+Log in to <https://tv.youtube.com/> in Brave again. If the page still shows the
+signed-out view, unlock the login keyring and restart Brave.
+
+### `timed out waiting for the subscriptions page to load`
+
+The SPA is slow or the network is unstable. The next tick retries. If it happens
+every time, raise `OCU_LOAD_TIMEOUT_MS` (e.g. `120000`) in `run-check.sh`.
+
+### `another run already in progress — skipping this tick`
+
+Normal when two runs overlap. The next tick continues. If it persists, remove
+`run.lock` after confirming no run is active (`pgrep -af cancel-addons-linux`).
+
+### `no "Yes, cancel" dialog and item still present`
+
+The Remove click did not produce a dialog. The next tick retries. If it is
+always the same item, check the browser manually — the page may be in an
+unexpected state.
+
+### `no success message appeared`
+
+The confirmation was clicked but YouTube did not show success or an error in
+20 seconds. Next tick retries, and the add-on may already be gone.
+
+### `error canceling your membership`
+
+Usually a free trial or a temporary server refusal. It will retry every 15
+minutes by default. Set `OCU_REJECT_COOLDOWN_MIN` if you want less noise. Only
+YouTube support can force a server-side refusal.
+
+### Cron does nothing
+
+1. `pgrep -x cron` — the daemon must be running.
+2. `crontab -l` — the line must be present.
+3. `cat cron.log` — look for wrapper errors.
+4. Make sure the display is correct. `run-check.sh` defaults to `DISPLAY=:0`;
+   if yours is different, export it there.
+
+### Brave pops to the front every 15 minutes
+
+Expected: the engine calls `Page.bringToFront`. If it bothers you, stop cron or
+reduce the frequency. CDP clicks can work in a background tab, but raising the
+tab makes the page state reliable.
+
+### `Unlock Keyring` dialog after reboot
+
+Unlock it. Brave cannot read the saved YouTube TV cookies while the keyring is
+locked.
+
+### Nothing happens at all
+
+Run the doctor:
+
+```bash
+./doctor.sh
+```
+
+Then run one scan manually and read `cancel-log.txt`.
+
+---
+
+## 13. Stop / uninstall / revert
+
+Stop the automation:
+
+```bash
+./uninstall-cron.sh
+```
+
+This removes only the `# yt-automation` crontab line. Logs and files remain.
+
+Stop a run in progress:
+
+```bash
+pkill -f cancel-addons-linux.mjs
+```
+
+Revert the Brave launcher change:
+
+```bash
+rm -f ~/.local/share/applications/brave-browser.desktop \
+      ~/.local/share/applications/com.brave.Browser.desktop
+update-desktop-database ~/.local/share/applications 2>/dev/null || true
+```
+
+Then close Brave completely and start it normally. The debugging port is gone
+until you launch it with the flag again.
+
+Remove the project:
+
+```bash
+rm -rf ~/yt-automation      # or your clone path
+```
+
+The GitHub repository and its history are separate; delete it on GitHub if you
+want it gone too.
+
+---
+
+## 14. Security notes
+
+- `--remote-debugging-port=9222` lets **any process running as your user**
+  control the browser, including reading logged-in pages and cookies.
+- The port binds to `127.0.0.1` only. Do **not** add
+  `--remote-allow-origins=*` or expose it on `0.0.0.0`.
+- The port is required for this automation. When you stop using it, close Brave
+  and start it without the flag (section 13).
+- The scripts never store your Google password. They use your existing Brave
+  profile.
+- `cancel-log.txt` contains add-on names only, not credentials.
+- This tool performs real cancellations. Use the scan-only mode and review the
+  output before enabling cron.
+
+---
+
+## 15. FAQ
+
+**Do I need `open-computer-use` / `ocu` on Linux?**
+No. That is the Windows implementation. The Linux port uses CDP only.
+
+**Does it cancel my base plan?**
+No. The base plan has no Remove button and is never matched.
+
+**How many add-ons per run?**
+One by default (`OCU_MAX_REMOVALS`).
+
+**Does the Brave tab need to stay focused?**
+No, but it must exist and stay logged in. The engine reloads it and may bring
+it to the front.
+
+**Does my PC need to be on?**
+Yes. Missed cron ticks are skipped; the next quarter hour runs normally.
+
+**What if I have two YouTube TV tabs open?**
+The engine picks the first matching tab and reloads it. Extra tabs are left
+alone. They may show stale state until reloaded.
+
+**Can I use Chrome/Chromium instead of Brave?**
+Yes, if it listens on the same CDP port. Start it with
+`--remote-debugging-port=9222` and set `TV_URL`/`OCU_URL_PATTERN` if needed. The
+defaults and `launch-brave.sh` are Brave-specific.
+
+**Where are the logs?**
+`cancel-log.txt` (actions) and `cron.log` (scheduler output).
+
+**How do I test without cancelling anything?**
+`OCU_SCAN_ONLY=1 ./run-check.sh`, or `./test-error.sh` for the error path.
+
+---
+
+## 16. Project layout
+
+```
+yt-cancel-linux-ver/
+├── cancel-addons-linux.mjs    # Linux/Brave engine (CDP, no dependencies)
+├── run-check.sh               # one tick: env + start Brave + run engine
+├── launch-brave.sh            # start Brave with CDP enabled
+├── install-cron.sh            # install the 15-minute user crontab entry
+├── uninstall-cron.sh          # remove it
+├── doctor.sh                  # environment health check
+├── test-error.sh              # safe mock test of the rejection branch
+├── test/mock/index.html       # the mock subscriptions page used by the test
+├── README.md                  # this Linux guide
+├── README-WINDOWS.md          # original Windows + Chrome + ocu documentation
+├── cancel-addons.mjs          # original Windows ocu engine
+├── install-cron.ps1           # original Windows Task Scheduler installer
+├── uninstall-cron.ps1
+├── run-cancel.cmd
+├── LICENSE                    # MIT
+├── cancel-log.txt             # created at runtime (gitignored)
+├── cron.log                   # created at runtime (gitignored)
+├── rejections.json            # created at runtime (gitignored)
+└── run.lock                   # created at runtime (gitignored)
 ```
 
 ---
 
-## 11. Safety design
+## 17. Windows version
 
-| Mechanism | What it prevents |
-|---|---|
-| Strict button-name matching (`Remove …` only) | Never clicks "Add" or unrelated buttons |
-| Strict confirmation matching (`Yes, cancel`) | Never confirms the wrong thing |
-| Never matches the base plan | Base plan untouched |
-| One cancellation per run | Contained blast radius; paced behavior |
-| No same-run retry | No spam loops on a stuck page |
-| Lock file | No concurrent runs fighting over Chrome |
-| Timeouts + process-tree kill | A hung `ocu` call can't freeze the script forever |
-| Scan-only mode (`OCU_SCAN_ONLY=1`) | Practice/verify without touching anything |
-| Full logging | Every action is auditable |
+The original Windows implementation is preserved:
+
+- code: `cancel-addons.mjs`, `run-cancel.cmd`,
+  `install-cron.ps1`, `uninstall-cron.ps1`
+- documentation: [`README-WINDOWS.md`](README-WINDOWS.md)
+
+It uses Chrome + `open-computer-use` / `ocu` and Windows Task Scheduler. It is
+independent of the Linux files.
 
 ---
 
-## 12. Troubleshooting (in depth)
+## 18. License
 
-### 12.1 `ocu call failed: No app state is available for Google Chrome`
-**Why:** action tools require a `get_app_state` in the same process; the script
-always batches that, so this usually means Chrome isn't running or the target
-page/window is gone.
-**Fix:** open Chrome, sign in to YouTube TV, open the Membership page, re-run.
-
-### 12.2 `Windows runtime timed out after 30s`
-**Why:** transient slowness of the native accessibility runtime.
-**Fix:** automatic retry (3×) usually handles it; check network; re-run.
-
-### 12.3 `There was an error canceling your membership. Please try again later, or contact us.`
-**Why:** YouTube's **server** rejected the cancellation — most often for
-**trial add-ons**. The script can't fix server-side refusals.
-**Behavior:** it logs the rejection, stops, and retries on the next tick.
-**What you can do:** retry later (the tick may succeed), cancel via YouTube
-support/chat, or let the trial expire on its own.
-
-### 12.4 The script keeps saying `no 'Yes, cancel' dialog ... item still present`
-**Why:** the remove click didn't produce a confirmable dialog (typically the
-server rejection in 12.3).
-**Fix:** check the log for the rejection message; see 12.3.
-
-### 12.5 The run hangs / never finishes
-**Why:** an `ocu` child wedged (older versions lacked tree-kill).
-**Fix:** current code kills the whole tree on timeout. If you see a stuck
-process anyway, kill it (see §10). Update the script to the latest version.
-
-### 12.6 Nothing appears in the log
-**Why:** the wrapper's `node` lookup failed, or the task runs under a
-different user.
-**Fix:** run `.\run-cancel.cmd` manually to see the error; confirm Node.js is
-on PATH for the account running the task.
-
-### 12.7 Chrome window "pops up" every 15 minutes
-**Expected.** The script restores the YouTube TV window to interact with it.
-If this bothers you, reduce frequency or stop automation (§10).
-
-### 12.8 `schtasks` shows an old "Next Run Time"
-**Why:** missed runs are skipped when the PC is off; the next 15-minute mark
-takes over.
-
-### 12.9 `Get-Content` log is huge
-Logs grow unbounded. Trim them periodically:
-
-```powershell
-Get-Content .\cancel-log.txt -Tail 200 | Set-Content .\cancel-log.txt
-```
-
----
-
-## 13. FAQ
-
-**Q: Will this cancel my base YouTube TV plan?**
-No — the base plan has no Remove button and is never matched.
-
-**Q: How many add-ons are cancelled per run?**
-One by default. Set `OCU_MAX_REMOVALS` to change that.
-
-**Q: Does it need OpenCode (or this chat) to be open?**
-No — it runs standalone via Task Scheduler.
-
-**Q: Does it need my PC to be on?**
-Yes. Missed ticks are skipped; the next tick runs at the next 15-minute mark.
-
-**Q: Is it safe to use while I'm working?**
-The only visible effect is the Chrome window briefly coming to the front.
-
-**Q: What if I delete the repo folder?**
-The task points at `run-cancel.cmd`; if that path disappears, the task will
-fail — delete the task too (see §10).
-
-**Q: Can I use it on macOS/Linux?**
-The window-restore and Task Scheduler parts are Windows-specific. The core
-logic is portable, but this repo targets Windows.
-
-**Q: Where are logs?**
-`cancel-log.txt` in the project folder.
-
----
-
-## 14. Project layout
-
-```
-yt-automation/
-├── cancel-addons.mjs      # The automation engine (all logic)
-├── run-cancel.cmd         # Wrapper for manual runs & Task Scheduler
-├── install-cron.ps1       # One-click 15-min scheduled-task installer
-├── uninstall-cron.ps1     # One-click uninstaller
-├── cancel-log.txt         # Created automatically — run history
-├── run.lock               # Created automatically — concurrency lock
-└── README.md              # This file
-```
-
----
-
-## 15. License
-
-MIT — use, modify, share freely. You are responsible for your own account
-actions.
+MIT — see [LICENSE](LICENSE). You are responsible for your own account actions.

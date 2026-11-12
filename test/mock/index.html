@@ -1,0 +1,63 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Membership - Settings - Mock YouTube TV</title>
+</head>
+<body>
+  <h1>Membership</h1>
+  <h2>Your plan</h2>
+  <p>Mock base plan — this page exists only to exercise the error branch.</p>
+
+  <h2>Your add-ons</h2>
+  <div>Test Add-on</div>
+  <button id="removeBtn" aria-label="Remove Test Add-on">Remove</button>
+
+  <div id="dialog" hidden style="border:1px solid #333;padding:1em;margin-top:1em">
+    <p>Review and cancel</p>
+    <div>Test Add-on</div>
+    <button id="yesBtn" aria-label="Yes, cancel">Yes, cancel</button>
+  </div>
+
+  <div id="filler">
+    This is filler text so the page passes the automation's minimum-content check.
+    Lorem ipsum dolor sit amet, consectetur adipiscing elit. Sed do eiusmod tempor
+    incididunt ut labore et dolore magna aliqua. Ut enim ad minim veniam, quis
+    nostrud exercitation ullamco laboris nisi ut aliquip ex ea commodo consequat.
+    Duis aute irure dolor in reprehenderit in voluptate velit esse cillum dolore eu
+    fugiat nulla pariatur. Excepteur sint occaecat cupidatat non proident, sunt in
+    culpa qui officia deserunt mollit anim id est laborum. Lorem ipsum dolor sit
+    amet, consectetur adipiscing elit. Sed do eiusmod tempor incididunt ut labore
+    et dolore magna aliqua. Ut enim ad minim veniam, quis nostrud exercitation
+    ullamco laboris nisi ut aliquip ex ea commodo consequat. Duis aute irure dolor
+    in reprehenderit in voluptate velit esse cillum dolore eu fugiat nulla pariatur.
+    Excepteur sint occaecat cupidatat non proident, sunt in culpa qui officia
+    deserunt mollit anim id est laborum. Lorem ipsum dolor sit amet, consectetur
+    adipiscing elit. Sed do eiusmod tempor incididunt ut labore et dolore magna
+    aliqua. Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris nisi
+    ut aliquip ex ea commodo consequat. Duis aute irure dolor in reprehenderit in
+    voluptate velit esse cillum dolore eu fugiat nulla pariatur. Excepteur sint
+    occaecat cupidatat non proident, sunt in culpa qui officia deserunt mollit anim
+    id est laborum. Lorem ipsum dolor sit amet, consectetur adipiscing elit. Sed do
+    eiusmod tempor incididunt ut labore et dolore magna aliqua. Ut enim ad minim
+    veniam, quis nostrud exercitation ullamco laboris nisi ut aliquip ex ea commodo
+    consequat. Duis aute irure dolor in reprehenderit in voluptate velit esse cillum
+    dolore eu fugiat nulla pariatur. Excepteur sint occaecat cupidatat non proident,
+    sunt in culpa qui officia deserunt mollit anim id est laborum.
+  </div>
+
+  <script>
+    document.getElementById('removeBtn').onclick = function () {
+      document.getElementById('dialog').hidden = false;
+    };
+
+    document.getElementById('yesBtn').onclick = function () {
+      document.getElementById('dialog').hidden = true;
+      const toast = document.createElement('div');
+      toast.id = 'toast';
+      toast.textContent = 'There was an error canceling your membership. Please try again later, or contact us.';
+      document.body.appendChild(toast);
+    };
+  </script>
+</body>
+</html>
